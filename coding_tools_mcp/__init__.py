@@ -1,3 +1,3 @@
 """Coding Tools MCP server package."""
 
-__version__ = "0.5.1+zamery.browser2"
+__version__ = "0.5.2+zamery.browser2.oauth1"

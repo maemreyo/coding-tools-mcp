@@ -1,0 +1,55 @@
+{
+  "byte_reproducible_two_builds": true,
+  "format": "zamery.browser-v2.bg-p6w.offline-wheel-inventory.v1",
+  "offline_disposable_venv_install": "PASS",
+  "package": "coding-tools-mcp",
+  "platform": "macos-arm64-cpython3.14",
+  "source_base_commit": "6ede335ee54881aee9fce0be5b61563c834dacb4",
+  "source_date_epoch": 1792368000,
+  "source_file_sha256": {
+    "coding_tools_mcp/__init__.py": "4ccceb8f35afa23329f95a1025a0b0d8a88efbf06a042b1f494716050a4f9fc4",
+    "coding_tools_mcp/browser_v2_gateway.py": "4707191dd25f4d6e9534022446455b12ebf71bd99c5621b176d9709a6130e504",
+    "coding_tools_mcp/server.py": "fe9dae8a0c20aa71bc5f7bb27f7cd1118c71a337ae99b7bf58509b03b3d29e11",
+    "pyproject.toml": "e9008f84baf29e6b28cf024941483e5b74520a6f22845c4f2a5ed66351211c09",
+    "tests/test_browser_v2_setup_signer.py": "5ac64b17d79a2777e53f4f71bda94bf473c44d52ece283560929bee33e5cb62b"
+  },
+  "version": "0.5.2+zamery.browser2.oauth1",
+  "wheels": [
+    {
+      "bytes": 184962,
+      "role": "reviewed-offline-dependency",
+      "sha256": "661c298b4821edebead0c91edd2b00374d67ad7c5a1f7a91d4442633b79d6a72",
+      "wheel": "cffi-2.1.1-cp314-cp314-macosx_11_0_arm64.whl"
+    },
+    {
+      "bytes": 180097,
+      "role": "gateway",
+      "sha256": "e675ee61513cc32baa5c12968916752dc72f83f2ab158f17dd7fc9a5fa457db1",
+      "wheel": "coding_tools_mcp-0.5.2+zamery.browser2.oauth1-py3-none-any.whl"
+    },
+    {
+      "bytes": 7179869,
+      "role": "reviewed-offline-dependency",
+      "sha256": "ea42cbe97209df307fdc3b155f1b6fa2577c0defa8f1f7d3be7d31d189108ad4",
+      "wheel": "cryptography-46.0.7-cp311-abi3-macosx_10_9_universal2.whl"
+    },
+    {
+      "bytes": 4780131,
+      "role": "reviewed-offline-dependency",
+      "sha256": "e158cb00350dc278f3b91551101aa7d12415a66ebf2c91d8d5ac14e56ddd3ad0",
+      "wheel": "pillow-12.3.0-cp314-cp314-macosx_11_0_arm64.whl"
+    },
+    {
+      "bytes": 51178,
+      "role": "reviewed-offline-dependency",
+      "sha256": "51d5a8ba2be0bbe440b99d2112604c95bbbc3c2748a64260186c541e1729cd80",
+      "wheel": "pycparser-3.11-py3-none-any.whl"
+    },
+    {
+      "bytes": 33860,
+      "role": "reviewed-offline-dependency",
+      "sha256": "42d59d631f7768a1028a64c7ff581a9bf7519804daf91fc5b6c56e30eec5e193",
+      "wheel": "pyjwt-2.15.1-py3-none-any.whl"
+    }
+  ]
+}
