@@ -929,6 +929,13 @@ TOOL_REGISTRY: dict[str, ToolSpec] = {
         open_world=True,
         gated_by="browser_v2_enabled",
     ),
+    "browser_v2_setup": ToolSpec(
+        title="Browser V2 background setup (owner authorization required)",
+        description=("Request allowlisted setup status/staging/registration jobs through "
+                     "the pinned Manager CLI; signing does not approve installation."),
+        open_world=True,
+        gated_by="browser_v2_enabled",
+    ),
 }
 
 LANDLOCK_CREATE_RULESET_VERSION = 1
@@ -1936,6 +1943,12 @@ class Runtime:
                               category="permission")
         return self.browser_v2_gateway.dispatch(_browser_caller.get(), args)
 
+    def browser_v2_setup(self, args: dict[str, Any]) -> dict[str, Any]:
+        if self.browser_v2_gateway is None:
+            raise ToolFailure("BROWSER_V2_DENIED", "Browser V2 gateway not configured",
+                              category="permission")
+        return self.browser_v2_gateway.dispatch_setup(_browser_caller.get(), args)
+
     def resolve_existing(self, raw_path: str = ".") -> ResolvedPath:
         return self.workspace.resolve_existing(raw_path)
 
@@ -2371,7 +2384,7 @@ class Runtime:
             # never enter diagnostic traces, including when TRACE=1.
             "args": (
                 {"operation": args.get("operation")}
-                if name == "browser_v2"
+                if name in {"browser_v2", "browser_v2_setup"}
                 else redact_for_trace(args)
             ),
         }
@@ -6332,6 +6345,18 @@ def input_schemas() -> dict[str, dict[str, Any]]:
                 "input": {**string, "maxLength": 8192},
             },
             ["operation", "scope"],
+        ),
+        "browser_v2_setup": object_schema(
+            {
+                "operation": {**string, "enum": [
+                    "status", "verify", "stage_companion", "stage_native",
+                    "request_registration", "get_job", "cancel_job", "reconcile_job",
+                ]},
+                "request_id": {**string, "minLength": 36, "maxLength": 36},
+                "extension_id": {**string, "minLength": 32, "maxLength": 32},
+                "node_path": {**string, "minLength": 1, "maxLength": 1023},
+            },
+            ["operation", "request_id"],
         ),
     }
 

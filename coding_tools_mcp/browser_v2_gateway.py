@@ -29,7 +29,13 @@ OPERATIONS = frozenset((
     "click", "fill", "screenshot", "request_renewal", "release",
 ))
 CLAIM_SCHEMA = "zam.browser.gateway.caller.v1"
+SETUP_CLAIM_SCHEMA = "zam.browser.setup.caller.v1"
+SETUP_OPERATIONS = frozenset((
+    "status", "verify", "stage_companion", "stage_native",
+    "request_registration", "get_job", "cancel_job", "reconcile_job",
+))
 CONSUMER_NAMESPACE = uuid.UUID("9c66daed-98e0-5c82-9db9-6ee55dd9ad72")
+SETUP_REQUEST_NAMESPACE = uuid.UUID("4a9809c2-18b6-4354-a68f-f3769b9b8b45")
 UUID_FIELDS = frozenset(("session_id", "consumer_instance_id", "installation_id",
                          "browser_instance_id", "tab_handle", "document_id"))
 
@@ -43,6 +49,16 @@ def canonical_json(value: Any) -> bytes:
     # This detail is digest- and signature-critical for HTTPS origin fields.
     encoded = json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
     return encoded.replace("/", "\\/").encode("utf-8")
+
+
+def setup_arguments_json(value: dict[str, Any]) -> bytes:
+    """Mirror Manager JSONEncoder.sortedKeys + withoutEscapingSlashes.
+
+    Unlike BrowserV2Wire, the setup contract uses camelCase property names.
+    The exact bytes, rather than the raw MCP JSON, are SHA-256 committed.
+    """
+    return json.dumps(value, sort_keys=True, separators=(",", ":"),
+                      ensure_ascii=False, allow_nan=False).encode("utf-8")
 
 
 def _uuid(raw: Any) -> str:
@@ -207,12 +223,140 @@ class BrowserGateway:
         })
         return base64.urlsafe_b64encode(proof).rstrip(b"=").decode("ascii")
 
+    def setup_proof(self, caller: BrowserCaller, arguments: dict[str, Any],
+                    now_ms: int | None = None) -> dict[str, str]:
+        """Sign setup intent with the SAME owner-pinned Ed25519 identity.
+
+        The caller must already have been verified by the HTTP transport.
+        The v1 Manager proof checks gateway/request/operation/arguments/nonce;
+        session/consumer are enforced at the Gateway boundary (the v1 setup
+        verifier cannot independently check OAuth identity).
+        """
+        if (not isinstance(caller, BrowserCaller) or not isinstance(arguments, dict)
+                or not isinstance(arguments.get("operation"), str)
+                or arguments["operation"] not in SETUP_OPERATIONS
+                or "requestID" not in arguments):
+            raise _deny()
+        raw_arguments = setup_arguments_json(arguments)
+        now = int(time.time() * 1000) if now_ms is None else now_ms
+        claim = {
+            "schemaVersion": SETUP_CLAIM_SCHEMA,
+            "gatewayID": self.gateway_id,
+            "requestID": arguments["requestID"],
+            "nonce": str(uuid.uuid4()).upper(),
+            "operation": arguments["operation"],
+            "argumentsSHA256": hashlib.sha256(raw_arguments).hexdigest(),
+            "issuedAtMS": now,
+            "expiresAtMS": now + 20_000,
+        }
+        payload = setup_arguments_json(claim)
+        return {
+            "payload": base64.b64encode(payload).decode("ascii"),
+            "signature": base64.b64encode(self._signer.sign(payload)).decode("ascii"),
+        }
+
+    def dispatch_setup(self, caller: BrowserCaller | None,
+                       args: dict[str, Any]) -> dict[str, Any]:
+        """OAuth-authenticated, allowlisted background setup over pinned CLI.
+
+        Browser grants, Chrome Share, image disclosure, and owner registration
+        approval are NOT authorized by this path. Setup proof travels via stdin
+        and never appears in argv, environment, trace or tool response.
+        """
+        if caller is None or not isinstance(caller, BrowserCaller) or not isinstance(args, dict):
+            raise _deny()
+        operation = args.get("operation")
+        if not isinstance(operation, str) or operation not in SETUP_OPERATIONS:
+            raise _deny()
+        expected = {"operation", "request_id"}
+        if operation == "request_registration":
+            expected |= {"extension_id", "node_path"}
+        if set(args) != expected:
+            raise _deny("Unrecognized or incomplete setup request")
+        request_id = _uuid(args.get("request_id"))
+        # Setup v1's Manager claim lacks OAuth session/consumer fields. Bind the
+        # Manager-side job namespace deterministically to the validated token,
+        # so another client/session reusing a visible request_id can NEVER poll
+        # or cancel the original job. This is a namespace fence, not a grant.
+        scoped_request_id = str(uuid.uuid5(
+            SETUP_REQUEST_NAMESPACE,
+            caller.session_id + "|" + caller.consumer_instance_id + "|" + request_id,
+        )).upper()
+        arguments: dict[str, Any] = {"requestID": scoped_request_id, "operation": operation}
+        if operation == "request_registration":
+            extension_id, node_path = args["extension_id"], args["node_path"]
+            # Chrome IDs are [a-p]{32}, not arbitrary manifest contents.
+            if not isinstance(extension_id, str) or not re.fullmatch(r"[a-p]{32}", extension_id):
+                raise _deny("Invalid Chrome extension identity")
+            if (not isinstance(node_path, str) or not node_path.startswith("/")
+                    or len(node_path.encode("utf-8")) >= 1024 or "\x00" in node_path
+                    or ".." in node_path.split("/") or any(ord(x) < 32 for x in node_path)):
+                raise _deny("Invalid reviewed Node path")
+            arguments["extensionID"] = extension_id
+            arguments["nodePath"] = node_path
+        cli = _checked_cli(self._cli_path, self._cli_sha256)
+        request = setup_arguments_json({
+            "arguments": arguments,
+            "proof": self.setup_proof(caller, arguments),
+        })
+        if len(request) > 16_384:
+            raise _deny("Setup request exceeds CLI limit")
+        try:
+            result = subprocess.run(
+                [cli, "browser", "v2", "setup"], input=request,
+                capture_output=True, timeout=25, check=False,
+                env={"PATH": "/usr/bin:/bin", "HOME": str(Path.home())},
+            )
+            if len(result.stdout) > 1_048_576 or len(result.stderr) > 131_072:
+                raise _deny("Setup CLI response exceeds bounds")
+            response = json.loads(result.stdout)
+        except (OSError, ValueError, subprocess.TimeoutExpired) as exc:
+            raise _deny("Setup CLI unavailable or response invalid") from exc
+        exit_codes = {"complete": 0, "pending": 3, "denied": 4,
+                      "unavailable": 5, "invalid": 6, "failed": 7,
+                      "outcome_unknown": 7}
+        reasons = {"ok", "waiting_for_owner", "owner_denied", "expired", "cancelled",
+                   "not_implemented", "unavailable", "unknown_command", "invalid_arguments",
+                   "unsupported_schema", "policy_denied", "unsafe_storage", "resource_limit",
+                   "execution_failed", "outcome_unknown"}
+        if (not isinstance(response, dict)
+                or set(response) - {"schema_version", "status", "reason_code", "request_id", "data"}
+                or response.get("schema_version") != "zam.cli.v1"
+                or not isinstance(response.get("request_id"), str)
+                or response["request_id"].upper() != scoped_request_id
+                or not isinstance(response.get("status"), str)
+                or response["status"] not in exit_codes
+                or not isinstance(response.get("reason_code"), str)
+                or response["reason_code"] not in reasons
+                or result.returncode != exit_codes[response["status"]]):
+            raise _deny("Unexpected setup CLI response")
+        # Do not relay private native registration details or arbitrary file
+        # paths in data. A state-only projection supports job reconciliation;
+        # actual owner review remains native to Manager.
+        safe = {"ok": True, "schema_version": "zam.cli.v1",
+                "request_id": request_id, "status": response["status"],
+                "reason_code": response["reason_code"],
+                "cli_exit_code": result.returncode}
+        data = response.get("data")
+        if (isinstance(data, dict) and isinstance(data.get("state"), str)
+                and data["state"] in {"pending_owner", "committing", "cancelled",
+                                      "completed", "verified_staged"}):
+            safe["state"] = data["state"]
+        return safe
+
     def dispatch(self, caller: BrowserCaller | None, args: dict[str, Any]) -> dict[str, Any]:
         if caller is None:
             raise _deny()
         op = args.get("operation")
         if not isinstance(op, str) or op not in OPERATIONS:
             raise _deny()
+        allowed = {"operation", "scope"}
+        if op in {"click", "fill"}:
+            allowed.add("ref")
+        if op == "fill":
+            allowed.add("input")
+        if set(args) != allowed:
+            raise _deny("Unrecognized or incomplete Browser V2 arguments")
         scope, scope_bytes = canonical_scope(args.get("scope"))
         if (scope["session_id"] != caller.session_id
                 or scope["audience"]["consumer_instance_id"] != caller.consumer_instance_id):

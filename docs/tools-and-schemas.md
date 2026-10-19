@@ -6,7 +6,7 @@ properties, annotations, and error codes with the contract.
 
 ## Fixed inventory
 
-The registry holds exactly 19 tools. Two are gated, so a default `tools/list`
+The registry holds exactly 21 tools. Four are gated, so a default `tools/list`
 advertises 18:
 
 - `server_info`: server, workspace, automatic project context, policy, runtime,
@@ -31,8 +31,12 @@ advertises 18:
 - `git_blame`: structured bounded line attribution.
 - `request_permissions`: report elicitation status without silently granting.
 - `view_image`: one MCP image content block plus structured metadata.
+- `browser_v2`: OAuth-bound, separately owner-authorized browser observations,
+  interactions and screenshot metadata through the pinned Manager CLI.
+- `browser_v2_setup`: OAuth-bound, nonce-signed allowlisted background setup
+  and job-state operations; cannot approve a registration or disclose pixels.
 
-Two gates apply, and they are not tool profiles:
+Three gate families apply, and they are not tool profiles:
 
 - `view_image` is a **capability** gate: an installation that cannot accept
   binary image content disables it, and a disabled `view_image` is an unknown
@@ -43,6 +47,10 @@ Two gates apply, and they are not tool profiles:
   advertising it hands the model a call that is guaranteed to fail. The handler
   stays reachable by name in every mode, so removing it from the catalog does
   not break a client that calls it anyway.
+- `browser_v2` and `browser_v2_setup` require explicit gateway enrollment,
+  HTTP OAuth mode, pinned Ed25519 key and pinned CLI checksum. Neither is
+  exposed under stdio, legacy static bearer auth or default configuration.
+  See [BG-P6 signer contract](browser-v2-oauth-signer-bg-p6-20261019.md).
 
 The remaining 17 tools are always advertised, and `listChanged` is `false`.
 
