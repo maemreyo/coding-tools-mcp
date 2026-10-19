@@ -7,6 +7,7 @@ import secrets
 import threading
 import time
 import urllib.parse
+import uuid
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -194,6 +195,9 @@ def create_access_token(config: OAuthConfig, server_url: str, *, client_id: str)
             "aud": server_url,
             "sub": client_id,
             "client_id": client_id,
+            # One authenticated token = one opaque Browser V2 session.
+            # Existing OAuth behavior and claims remain otherwise unchanged.
+            "jti": str(uuid.uuid4()),
             "iat": now,
             "exp": now + config.token_ttl,
             "scope": "mcp",
@@ -204,6 +208,13 @@ def create_access_token(config: OAuthConfig, server_url: str, *, client_id: str)
 
 
 def validate_access_token(token: str, config: OAuthConfig, server_url: str) -> bool:
+    return validated_access_token_claims(token, config, server_url) is not None
+
+
+def validated_access_token_claims(
+    token: str, config: OAuthConfig, server_url: str
+) -> dict[str, Any] | None:
+    """Identity source for trusted HTTP handlers. Never accept client metadata."""
     try:
         claims = jwt.decode(
             token,
@@ -213,9 +224,11 @@ def validate_access_token(token: str, config: OAuthConfig, server_url: str) -> b
             issuer=server_url,
         )
     except jwt.PyJWTError:
-        return False
+        return None
     client_id = claims.get("client_id")
-    return isinstance(client_id, str) and config.registry.get(client_id) is not None
+    if not isinstance(client_id, str) or config.registry.get(client_id) is None:
+        return None
+    return claims
 
 
 def _secret_digest(secret: str) -> str:

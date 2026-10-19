@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import base64
 import ctypes
+from contextvars import ContextVar
 import errno
 import hashlib
 import html
@@ -49,8 +50,10 @@ from .oauth import (
     create_access_token,
     valid_pkce_challenge,
     validate_access_token,
+    validated_access_token_claims,
     verify_pkce,
 )
+from .browser_v2_gateway import BrowserCaller, BrowserGateway
 from .breaker import RepeatFailureBreaker, argument_fingerprint
 from .changes import (
     CHANGE_ACTIONS,
@@ -749,6 +752,10 @@ def _image_content(payload: dict[str, Any]) -> list[dict[str, Any]]:
         }
     ]
 
+_browser_caller: ContextVar[BrowserCaller | None] = ContextVar(
+    "verified_browser_v2_oauth_caller", default=None
+)
+
 
 TOOL_REGISTRY: dict[str, ToolSpec] = {
     "server_info": ToolSpec(
@@ -915,6 +922,12 @@ TOOL_REGISTRY: dict[str, ToolSpec] = {
         idempotent=True,
         content_builder=_image_content,
         gated_by="enable_view_image",
+    ),
+    "browser_v2": ToolSpec(
+        title="Browser V2 (owner authorized)",
+        description="Run one OAuth-bound, separately browser-authorized Zamm Browser V2 CLI operation.",
+        open_world=True,
+        gated_by="browser_v2_enabled",
     ),
 }
 
@@ -1523,6 +1536,21 @@ class Runtime:
         self.permission_mode = permission_mode
         self.capabilities = PERMISSION_MODE_CAPABILITIES[permission_mode]
         self.dangerously_skip_all_permissions = self.capabilities.skip_all_permissions
+        # Opt-in: no owner key, OAuth session or CLI pin means NO browser tool.
+        # Never enable this for local stdio or legacy static bearer credentials.
+        self.browser_v2_gateway: BrowserGateway | None = None
+        gateway_id = os.environ.get(f"{ENV_PREFIX}_BROWSER_V2_GATEWAY_ID", "")
+        key_file = os.environ.get(f"{ENV_PREFIX}_BROWSER_V2_KEY_FILE", "")
+        cli_file = os.environ.get(f"{ENV_PREFIX}_BROWSER_V2_ZAM_CLI", "")
+        cli_sha256 = os.environ.get(f"{ENV_PREFIX}_BROWSER_V2_ZAM_CLI_SHA256", "")
+        if (transport == "http" and oauth_config is not None
+                and gateway_id and key_file and cli_file and cli_sha256):
+            # Broken/replaced owner config fails startup rather than falling
+            # back to unsigned calls or mock proof generation.
+            self.browser_v2_gateway = BrowserGateway(
+                gateway_id, Path(key_file), Path(cli_file), cli_sha256
+            )
+        self.browser_v2_enabled = self.browser_v2_gateway is not None
         # Computed after the permission mode resolves: `gated_by` names a
         # runtime property, and one of the gates is the permission mode.
         self._exposed_tool_names = [
@@ -1901,6 +1929,12 @@ class Runtime:
 
     def oauth_enabled(self) -> bool:
         return self.oauth_config is not None
+
+    def browser_v2(self, args: dict[str, Any]) -> dict[str, Any]:
+        if self.browser_v2_gateway is None:
+            raise ToolFailure("BROWSER_V2_DENIED", "Browser V2 gateway not configured",
+                              category="permission")
+        return self.browser_v2_gateway.dispatch(_browser_caller.get(), args)
 
     def resolve_existing(self, raw_path: str = ".") -> ResolvedPath:
         return self.workspace.resolve_existing(raw_path)
@@ -2333,7 +2367,13 @@ class Runtime:
             "duration_ms": duration_ms,
             "command_id": payload.get("command_id"),
             "truncated": payload.get("truncated"),
-            "args": redact_for_trace(args),
+            # Browser fill text, DOM refs and private page identities must
+            # never enter diagnostic traces, including when TRACE=1.
+            "args": (
+                {"operation": args.get("operation")}
+                if name == "browser_v2"
+                else redact_for_trace(args)
+            ),
         }
         print(json.dumps(event, sort_keys=True, separators=(",", ":")), file=sys.stderr, flush=True)
 
@@ -6280,6 +6320,19 @@ def input_schemas() -> dict[str, dict[str, Any]]:
             },
             ["path"],
         ),
+        "browser_v2": object_schema(
+            {
+                "operation": {**string, "enum": [
+                    "request_access", "list_shared", "open_managed", "status",
+                    "snapshot", "click", "fill", "screenshot",
+                    "request_renewal", "release",
+                ]},
+                "scope": {"type": "object"},
+                "ref": {"type": "object"},
+                "input": {**string, "maxLength": 8192},
+            },
+            ["operation", "scope"],
+        ),
     }
 
 
@@ -6625,10 +6678,30 @@ class MCPHandler(http.server.BaseHTTPRequestHandler):
             if legacy_protocol_version_is_supported(transport_protocol_version)
             else None
         )
+        # ContextVar is request/thread-local. Runtime is shared by ALL HTTP
+        # clients; mutating a global "current principal" would cross sessions.
+        principal: BrowserCaller | None = None
+        config = self.runtime.oauth_config
+        if config is not None:
+            auth = self.headers.get("Authorization", "")
+            if auth.startswith("Bearer "):
+                claims = validated_access_token_claims(
+                    auth[len("Bearer "):], config, self.oauth_base_url()
+                )
+                if claims is not None:
+                    try:
+                        principal = BrowserCaller.from_oauth_claims(
+                            claims, self.oauth_base_url()
+                        )
+                    except ToolFailure:
+                        pass  # Older valid OAuth tokens still work for all existing tools.
+        binding = _browser_caller.set(principal)
         try:
             return dispatch_rpc(self.runtime, request, transport_protocol_version=legacy_version)
         except Exception as exc:  # noqa: BLE001 - HTTP must always answer with JSON-RPC
             return jsonrpc_error(response_id(request), -32603, str(exc))
+        finally:
+            _browser_caller.reset(binding)
 
     def is_authorized(self) -> bool:
         if not self.runtime.auth_enabled():

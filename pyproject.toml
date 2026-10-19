@@ -24,6 +24,12 @@ Source = "https://github.com/xyTom/coding-tools-mcp"
 Issues = "https://github.com/xyTom/coding-tools-mcp/issues"
 
 [project.optional-dependencies]
+browser-v2 = [
+  # Optional: only an explicitly enrolled, OAuth-authenticated Browser V2
+  # gateway loads these dependencies. No browser/Chrome install occurs.
+  "cryptography>=43,<47",
+  "Pillow>=10,<13",
+]
 dev = [
   # The official MCP SDK is the only client in the test suite we did not
   # write; the dual-era smoke needs it installed to run at all.
