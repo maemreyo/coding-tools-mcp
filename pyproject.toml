@@ -56,4 +56,5 @@ where = [".", "apps/desktop-client"]
 include = ["coding_tools_mcp*", "mcp_desktop_client*"]
 
 [tool.setuptools.package-data]
+coding_tools_mcp = ["delegation_catalog.json"]
 mcp_desktop_client = ["locales/*.qm", "locales/*.ts"]

@@ -54,6 +54,7 @@ from .oauth import (
     verify_pkce,
 )
 from .browser_v2_gateway import BrowserCaller, BrowserGateway
+from . import delegation_ingress as _deleg
 from .breaker import RepeatFailureBreaker, argument_fingerprint
 from .changes import (
     CHANGE_ACTIONS,
@@ -752,6 +753,7 @@ def _image_content(payload: dict[str, Any]) -> list[dict[str, Any]]:
         }
     ]
 
+_delegation_caller = _deleg._delegation_caller
 _browser_caller: ContextVar[BrowserCaller | None] = ContextVar(
     "verified_browser_v2_oauth_caller", default=None
 )
@@ -937,6 +939,27 @@ TOOL_REGISTRY: dict[str, ToolSpec] = {
         gated_by="browser_v2_enabled",
     ),
 }
+
+def _register_delegation_tools() -> None:
+    """Add the ten Foundation work_* tools (gated by `delegation_enabled`). A catalog that fails its pin is simply not advertised."""
+    try:
+        catalog = _deleg.load_catalog()
+    except ToolFailure:
+        return
+    for tool in catalog["tools"]:
+        hints = tool["annotations"]
+        TOOL_REGISTRY[tool["name"]] = ToolSpec(
+            title="Delegate: " + tool["name"].removeprefix("work_").replace("_", " "),
+            description=tool["description"],
+            read_only=hints["readOnlyHint"],
+            destructive=hints["destructiveHint"],
+            idempotent=hints["idempotentHint"],
+            open_world=hints["openWorldHint"],
+            gated_by="delegation_enabled",
+        )
+
+
+_register_delegation_tools()
 
 LANDLOCK_CREATE_RULESET_VERSION = 1
 LANDLOCK_RULE_PATH_BENEATH = 1
@@ -1558,6 +1581,11 @@ class Runtime:
                 gateway_id, Path(key_file), Path(cli_file), cli_sha256
             )
         self.browser_v2_enabled = self.browser_v2_gateway is not None
+        # Opt-in agent delegation: same custody rules, OAuth transport only.
+        self.delegation_gateway: _deleg.DelegationGateway | None = None
+        if transport == "http" and oauth_config is not None:
+            self.delegation_gateway = _deleg.gateway_from_env(dict(os.environ), ENV_PREFIX)
+        self.delegation_enabled = self.delegation_gateway is not None
         # Computed after the permission mode resolves: `gated_by` names a
         # runtime property, and one of the gates is the permission mode.
         self._exposed_tool_names = [
@@ -1949,6 +1977,11 @@ class Runtime:
                               category="permission")
         return self.browser_v2_gateway.dispatch_setup(_browser_caller.get(), args)
 
+    def _delegation_call(self, tool: str, args: dict[str, Any]) -> dict[str, Any]:
+        if self.delegation_gateway is None:
+            raise ToolFailure("DELEGATION_DENIED", "Agent delegation is not configured", category="permission")
+        return self.delegation_gateway.call(_delegation_caller.get(), tool, args)
+
     def resolve_existing(self, raw_path: str = ".") -> ResolvedPath:
         return self.workspace.resolve_existing(raw_path)
 
@@ -2043,7 +2076,7 @@ class Runtime:
                 self.emit_tool_trace(name, args, replayed, started_at, context=context)
                 content = spec.content_builder(dict(replayed)) if spec.content_builder else None
                 return make_tool_result(name, replayed, is_error=replayed.get("ok") is False, content=content)
-            blocked = self.breaker.blocked_error_code(name, fingerprint)
+            blocked = None if name in _deleg.TOOL_NAMES else self.breaker.blocked_error_code(name, fingerprint)
             if blocked is not None:
                 raise self._repeat_failure_error(name, blocked)
             payload = handler(args)
@@ -2123,6 +2156,9 @@ class Runtime:
     ) -> None:
         """Count a structured failure whether returned or raised by a handler."""
 
+        if name in _deleg.TOOL_NAMES:
+            # Business failures (GRANT_REQUIRED, WORK_NOT_FOUND, ...) are state the Manager owns, not deterministic tool-call loops.
+            return
         raw_error = payload.get("error")
         error = raw_error if isinstance(raw_error, dict) else {}
         code = str(error.get("code") or "INTERNAL_ERROR")
@@ -2384,7 +2420,7 @@ class Runtime:
             # never enter diagnostic traces, including when TRACE=1.
             "args": (
                 {"operation": args.get("operation")}
-                if name in {"browser_v2", "browser_v2_setup"}
+                if name in {"browser_v2", "browser_v2_setup"} or name in _deleg.TOOL_NAMES
                 else redact_for_trace(args)
             ),
         }
@@ -4673,6 +4709,18 @@ class Runtime:
         return payload
 
 
+def _make_delegation_handler(tool_name: str) -> Callable[[Runtime, dict[str, Any]], dict[str, Any]]:
+    def handler(self: Runtime, args: dict[str, Any]) -> dict[str, Any]:
+        return self._delegation_call(tool_name, args)
+
+    handler.__name__ = tool_name
+    return handler
+
+
+for _delegation_tool in _deleg.TOOL_NAMES:
+    setattr(Runtime, _delegation_tool, _make_delegation_handler(_delegation_tool))
+
+
 def walk_files(root: Path) -> Iterator[Path]:
     if root.is_file() or root.is_symlink():
         yield root
@@ -5654,6 +5702,9 @@ def object_schema(properties: dict[str, Any] | None = None, required: list[str] 
 
 
 def tool_output_schema(name: str | None = None) -> dict[str, Any]:
+    if name in _deleg.TOOL_NAMES:
+        # Foundation contract: success | BusinessError, exactly as published (not merged into the generic envelope).
+        return _delegation_catalog_entry(name)["outputSchema"]
     """Declare what one tool actually returns, not just that it returns `ok`.
 
     One generic schema for eighteen tools told a client nothing: every field a
@@ -6002,6 +6053,18 @@ def tool_annotations(name: str, *, fake_readonly: bool = False) -> dict[str, Any
 
 
 @functools.cache
+def _delegation_catalog() -> dict[str, dict[str, Any]]:
+    try:
+        return {tool["name"]: tool for tool in _deleg.load_catalog()["tools"]}
+    except ToolFailure:
+        return {}
+
+
+def _delegation_catalog_entry(name: str) -> dict[str, Any]:
+    return _delegation_catalog()[name]
+
+
+@functools.cache
 def input_schemas() -> dict[str, dict[str, Any]]:
     # Cached: callers only read the returned tree, and rebuilding the full
     # ~190-line schema dict on every tools/call dispatch is measurable.
@@ -6009,7 +6072,7 @@ def input_schemas() -> dict[str, dict[str, Any]]:
     integer = {"type": "integer"}
     boolean = {"type": "boolean"}
     string_array = {"type": "array", "items": {"type": "string"}}
-    return {
+    schemas = {
         "server_info": object_schema(),
         "check_exec_environment": object_schema(),
         "read_file": object_schema(
@@ -6359,6 +6422,10 @@ def input_schemas() -> dict[str, dict[str, Any]]:
             ["operation", "request_id"],
         ),
     }
+    # Foundation-published input schemas, verbatim (the Manager's strict validation stays authoritative).
+    for tool_name, entry in _delegation_catalog().items():
+        schemas[tool_name] = entry["inputSchema"]
+    return schemas
 
 
 def _server_card_auth(runtime: Runtime, *, oauth_base_url: str | None = None) -> dict[str, Any]:
@@ -6706,6 +6773,8 @@ class MCPHandler(http.server.BaseHTTPRequestHandler):
         # ContextVar is request/thread-local. Runtime is shared by ALL HTTP
         # clients; mutating a global "current principal" would cross sessions.
         principal: BrowserCaller | None = None
+        claims: dict[str, Any] | None = None
+        auth = ""
         config = self.runtime.oauth_config
         if config is not None:
             auth = self.headers.get("Authorization", "")
@@ -6721,12 +6790,22 @@ class MCPHandler(http.server.BaseHTTPRequestHandler):
                         )
                     except ToolFailure:
                         pass  # Older valid OAuth tokens still work for all existing tools.
+        delegation_principal: _deleg.DelegationCaller | None = None
+        if config is not None and claims is not None:
+            try:
+                delegation_principal = _deleg.DelegationCaller.from_oauth_claims(
+                    claims, self.oauth_base_url(), verified_token=auth[len("Bearer "):]
+                )
+            except ToolFailure:
+                pass
         binding = _browser_caller.set(principal)
+        delegation_binding = _delegation_caller.set(delegation_principal)
         try:
             return dispatch_rpc(self.runtime, request, transport_protocol_version=legacy_version)
         except Exception as exc:  # noqa: BLE001 - HTTP must always answer with JSON-RPC
             return jsonrpc_error(response_id(request), -32603, str(exc))
         finally:
+            _delegation_caller.reset(delegation_binding)
             _browser_caller.reset(binding)
 
     def is_authorized(self) -> bool:

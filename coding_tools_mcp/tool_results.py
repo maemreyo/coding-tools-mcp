@@ -30,7 +30,26 @@ def make_tool_result(
     return {"content": result_content, "structuredContent": payload, "isError": is_error}
 
 
+def _render_delegation(tool_name: str, payload: dict[str, Any]) -> str:
+    """work_* replies are Foundation-bounded JSON; show the model the facts (ids, revision, cursors) it must pass back, not only a summary."""
+    if payload.get("ok") is False:
+        error = payload.get("error") if isinstance(payload.get("error"), dict) else {}
+        lines = [f"{error.get('code', 'ERROR')}: {error.get('message', 'Delegation call failed.')}"]
+        if error.get("neededAction"):
+            lines.append(f"Needed: {error['neededAction']}")
+        lines.append("Retry safe: yes (same idempotencyKey)." if error.get("retrySafe") else "Retry safe: no. Do not repeat this call unchanged.")
+        for key in ("workId", "evidenceRef", "submission"):
+            if error.get(key):
+                lines.append(f"{key}: {error[key]}")
+        return "\n".join(lines)
+    summary = payload.get("summary")
+    body = json.dumps(payload, separators=(",", ":"), ensure_ascii=False)
+    return (f"{summary}\n" if isinstance(summary, str) and summary else "") + body
+
+
 def render_tool_text(tool_name: str, payload: dict[str, Any], *, is_error: bool) -> str:
+    if tool_name.startswith("work_") and "contractVersion" in payload:
+        return _render_delegation(tool_name, payload)
     if is_error or payload.get("ok") is False:
         return _render_error(payload)
     renderer = _RENDERERS.get(tool_name)

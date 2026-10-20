@@ -6,7 +6,7 @@ properties, annotations, and error codes with the contract.
 
 ## Fixed inventory
 
-The registry holds exactly 21 tools. Four are gated, so a default `tools/list`
+The registry holds exactly 31 tools. Fourteen are gated, so a default `tools/list`
 advertises 18:
 
 - `server_info`: server, workspace, automatic project context, policy, runtime,
@@ -35,6 +35,18 @@ advertises 18:
   interactions and screenshot metadata through the pinned Manager CLI.
 - `browser_v2_setup`: OAuth-bound, nonce-signed allowlisted background setup
   and job-state operations; cannot approve a registration or disclose pixels.
+- `work_capabilities`: configured runtimes, readiness, limits and isolation caveats; zero model calls.
+- `work_submit`: persist a delegated Work and return a durable receipt (not a start/finish claim).
+- `work_list`: bounded owner-visible Work summaries for a fresh chat.
+- `work_inspect`: Work snapshot with status, submission evidence, budget estimate and allowed actions.
+- `work_wait`: bounded wait on persisted Work state; a timeout is not a failure.
+- `work_message`: durably queue a message for a Work or task.
+- `work_result`: chunked, non-destructive result retrieval.
+- `work_pause`: durably stop future dispatch.
+- `work_cancel`: durable cancellation request with explicit confirmation levels.
+- `work_resume`: resume a paused or input-blocked Work after grant/budget re-evaluation.
+  (The ten `work_*` tools are the Foundation delegation contract v0.1.0, served verbatim from `coding_tools_mcp/delegation_catalog.json`;
+  see [agent delegation ingress](agent-delegation-ingress-20261020.md).)
 
 Three gate families apply, and they are not tool profiles:
 
@@ -51,6 +63,8 @@ Three gate families apply, and they are not tool profiles:
   HTTP OAuth mode, pinned Ed25519 key and pinned CLI checksum. Neither is
   exposed under stdio, legacy static bearer auth or default configuration.
   See [BG-P6 signer contract](browser-v2-oauth-signer-bg-p6-20261019.md).
+- The ten `work_*` tools require the same enrollment shape (HTTP OAuth mode, a pinned Ed25519 key file, and the Manager's owner descriptor). They
+  are never exposed under stdio, legacy static bearer auth or default configuration.
 
 The remaining 17 tools are always advertised, and `listChanged` is `false`.
 
