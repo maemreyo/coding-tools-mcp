@@ -78,7 +78,16 @@ class Harness:
             self.proc.stdin.flush()
             self.proc.wait(timeout=10)
         except Exception:  # noqa: BLE001
-            self.proc.kill()
+            if self.proc.poll() is None:
+                self.proc.kill()
+                self.proc.wait(timeout=10)
+        finally:
+            # A stopped Manager subprocess must release all three owned pipes.
+            # Otherwise the restart acceptance test leaks descriptors and emits
+            # ResourceWarning despite its authenticated assertions passing.
+            for stream in (self.proc.stdin, self.proc.stdout, self.proc.stderr):
+                if stream is not None:
+                    stream.close()
 
 
 @unittest.skipUnless(MANAGER and Path(MANAGER, "tests/delegation-ingress/ingress-harness.ts").exists() and shutil.which("node"),
