@@ -8,6 +8,7 @@ Set ZAMERY_MANAGER_AGENTWORKFLOWS to the Manager checkout's Runtime/AgentWorkflo
 from __future__ import annotations
 
 import base64
+import datetime
 import hashlib
 import http.client
 import json
@@ -353,6 +354,63 @@ class DelegationTransportTests(unittest.TestCase):
         cancel = self.tool(self.token("coord-r"), "work_cancel", {"workId": made["workId"], "idempotencyKey": "c1"})
         self.assertNotEqual(cancel.get("error", {}).get("code"), "GRANT_REQUIRED", "cancel is a safety control and stays available to the owner")
         self.assertTrue(self.tool(self.token("coord-r"), "work_inspect", {"workId": made["workId"]})["ok"], "reads survive revocation")
+
+    def test_t6_revocation_after_receipt_before_dispatch_refuses_effect(self):
+        # The real engine must re-evaluate lane 02 authority after admission,
+        # not merely trust the grant embedded in the durable submit receipt.
+        self.manager.cmd("enrol", issuer=ISSUER, clientId="coord-before-dispatch", ownerId="owner-held", role="coordinator")
+        self.cfg.registry.add_preregistered("coord-before-dispatch", ("http://127.0.0.1/callback",), client_secret=None)
+        grant_id = self.manager.cmd("grant", ownerId="owner-held")["grantId"]
+        before = self.sends()
+        dispatch_before = self.manager.cmd("counts")["dispatches"]
+        self.manager.cmd("runtimeReady", ready=False)
+        try:
+            recorded = self.submit("coord-before-dispatch", "rev-before-send", goal="owned held dispatch")
+            self.assertTrue(recorded["ok"], recorded)
+            self.assertEqual(self.sends(), before, "submit receipt precedes executor send")
+            self.manager.cmd("revoke", grantId=grant_id, reason="owner cancelled execution grant")
+            self.manager.cmd("runtimeReady", ready=True)
+            deadline = time.monotonic() + 7
+            while time.monotonic() < deadline:
+                current = self.tool(self.token("coord-before-dispatch"), "work_inspect", {"workId": recorded["workId"]})
+                if any(x.get("code") == "GRANT_REQUIRED" for x in current.get("blocked", [])):
+                    break
+                time.sleep(0.2)
+            self.assertEqual(self.sends(), before, "revoked grant cannot be dispatched")
+            self.assertEqual(self.manager.cmd("counts")["dispatches"], dispatch_before,
+                             "a revoked root must not reserve any dispatch attempt")
+            current = self.tool(self.token("coord-before-dispatch"), "work_inspect", {"workId": recorded["workId"]})
+            self.assertTrue(current.get("blocked"), current)
+            self.assertTrue(any(x["code"] == "GRANT_REQUIRED" for x in current["blocked"]), current)
+        finally:
+            self.manager.cmd("runtimeReady", ready=True)
+
+    def test_t6_expiry_after_receipt_before_dispatch_refuses_effect(self):
+        self.manager.cmd("enrol", issuer=ISSUER, clientId="coord-expiring", ownerId="owner-expiring", role="coordinator")
+        self.cfg.registry.add_preregistered("coord-expiring", ("http://127.0.0.1/callback",), client_secret=None)
+        expires = datetime.datetime.fromtimestamp(time.time() + 1.3, datetime.timezone.utc).isoformat()
+        self.manager.cmd("grant", ownerId="owner-expiring", spec={"expiresAt": expires})
+        sends_before = self.sends()
+        dispatch_before = self.manager.cmd("counts")["dispatches"]
+        self.manager.cmd("runtimeReady", ready=False)
+        try:
+            recorded = self.submit("coord-expiring", "expire-before-send", goal="never dispatch expired")
+            self.assertTrue(recorded["ok"], recorded)
+            self.assertEqual(self.sends(), sends_before)
+            time.sleep(1.5)
+            self.manager.cmd("runtimeReady", ready=True)
+            deadline = time.monotonic() + 7
+            while time.monotonic() < deadline:
+                current = self.tool(self.token("coord-expiring"), "work_inspect", {"workId": recorded["workId"]})
+                if any(x.get("code") == "GRANT_EXPIRED" for x in current.get("blocked", [])):
+                    break
+                time.sleep(0.2)
+            self.assertEqual(self.sends(), sends_before)
+            self.assertEqual(self.manager.cmd("counts")["dispatches"], dispatch_before)
+            current = self.tool(self.token("coord-expiring"), "work_inspect", {"workId": recorded["workId"]})
+            self.assertTrue(any(x["code"] == "GRANT_EXPIRED" for x in current.get("blocked", [])), current)
+        finally:
+            self.manager.cmd("runtimeReady", ready=True)
 
     # -- reconnect follows owner identity --------------------------------------------------------------------------------------------
     def test_z_manager_unavailable_is_structured_and_restart_is_followed_via_descriptor(self):
