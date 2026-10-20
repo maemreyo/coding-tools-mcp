@@ -49,6 +49,10 @@ def main():
     cfg = OAuthConfig(password=secrets.token_urlsafe(24), token_secret=secrets.token_bytes(32), server_url=issuer)
     cfg.registry.add_preregistered("qa-coordinator", ("http://127.0.0.1/callback",), client_secret=None)
     cfg.registry.add_preregistered("qa-worker", ("http://127.0.0.1/callback",), client_secret=None)
+    # Never inherit serving browser gateways, receipt paths, or provider flags.
+    for name in tuple(os.environ):
+        if name.startswith("CODING_TOOLS_MCP_"):
+            del os.environ[name]
     os.environ.update({
         "CODING_TOOLS_MCP_DELEGATION_GATEWAY_ID": gateway_id,
         "CODING_TOOLS_MCP_DELEGATION_KEY_FILE": str(key),
