@@ -5,9 +5,17 @@ live connector. Contract: Zamery delegation Foundation v0.1.0, schema digest
 `sha256:19c77ef3b387ab9dbde9595b379efe823c194a12c67c39373b4ef31cb9123e1d`.
 Catalog source: Manager integration amendment `6cd7af52f2f8fb9d2583825e01307b18620499b4`.
 Bundled catalog file SHA-256: `d2bfda2c5acf94507538bc9199a1ecdb5504741696412de510a1381d8fb9a57b`.
-Offline provider test result: 21/21 passing against the Manager's authenticated **real v1 engine**
+Offline provider transport suite: 18/18 passing against the Manager's authenticated **real v1 engine**
 and a pinned FakeKit executor, including the revoke/expiry-after-receipt-before-dispatch cases.
 This is **not** a live connector deployment or proof of a real ChatGPT worker.
+
+Staged wheel for this exact amended catalog (not installed):
+`dist/delegation-v1-contract-19c77ef3/coding_tools_mcp-0.5.2+zamery.browser2.oauth2.delegation1.c19c77e-py3-none-any.whl`,
+SHA-256 `1b8e2463d25b4684713665e24120b7a70775d8d3b63282deb4c418ba2e8df584`.
+The wheel was installed into an isolated throwaway venv and its `load_catalog()` returned all ten tools with the pinned digest.
+The previous `delegation1` wheel has a different catalog and is superseded for staging only. No live provider, tunnel or connector was modified.
+
+**Integration branch is moving:** this wheel pins the `6cd7af5`-era catalog. After it was tested, the Manager coordinator merged lane 06 (`7287996`) and began merging lane 03; the coordinator's working tree had unresolved conflict stages in contract files and `contracts:check` failed. Therefore this wheel is **not installable as a matching candidate for the moving integration checkout**. First finalize the combined contract, regenerate and check it, then pin and stage a new wheel/version; do not merely edit the declared digest.
 
 ## What this provider does and does not do
 
