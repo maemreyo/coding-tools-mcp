@@ -55,6 +55,7 @@ from .oauth import (
 )
 from .browser_v2_gateway import BrowserCaller, BrowserGateway
 from . import delegation_ingress as _deleg
+from .tool_receipts import ToolReceiptLog, receipt_log_from_env
 from .breaker import RepeatFailureBreaker, argument_fingerprint
 from .changes import (
     CHANGE_ACTIONS,
@@ -1586,6 +1587,10 @@ class Runtime:
         if transport == "http" and oauth_config is not None:
             self.delegation_gateway = _deleg.gateway_from_env(dict(os.environ), ENV_PREFIX)
         self.delegation_enabled = self.delegation_gateway is not None
+        # Optional server-side receipts for authenticated read-only tool calls (digests only; see tool_receipts.py).
+        self.receipt_log: ToolReceiptLog | None = (
+            receipt_log_from_env(dict(os.environ), ENV_PREFIX) if transport == "http" and oauth_config is not None else None
+        )
         # Computed after the permission mode resolves: `gated_by` names a
         # runtime property, and one of the gates is the permission mode.
         self._exposed_tool_names = [
@@ -2088,6 +2093,7 @@ class Runtime:
                 content = spec.content_builder(payload) if spec.content_builder else None
                 return make_tool_result(name, payload, is_error=True, content=content)
             self.breaker.record_success(name, fingerprint, generation=breaker_generation)
+            self._record_tool_receipt(name, args, payload)
             if self._workspace_write_landed(name, payload, workspace_mutated=workspace_mutated):
                 # A write landed, so every "this call can never succeed"
                 # verdict the breaker holds was reached against a tree that no
@@ -2182,6 +2188,16 @@ class Runtime:
                     "Repeating it unchanged will be refused."
                 ),
             }
+
+    def _record_tool_receipt(self, name: str, args: dict[str, Any], payload: dict[str, Any]) -> None:
+        caller = _delegation_caller.get()
+        if self.receipt_log is None or caller is None or not self.receipt_log.wants(name):
+            return
+        try:
+            self.receipt_log.record(tool=name, args=args, payload=payload, session_id=caller.session_id, client_id=caller.client_id)
+        except (OSError, ValueError):
+            # Evidence is best-effort for the caller but never silently invented: a missing receipt is a failed check, not a pass.
+            pass
 
     def _is_callable_tool(self, name: str) -> bool:
         if name in self._exposed_tool_name_set:

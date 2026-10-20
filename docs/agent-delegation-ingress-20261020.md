@@ -41,3 +41,11 @@ Provider-originated failures use the Foundation `BusinessError` shape: `SETUP_RE
 
 - `tests/test_delegation_transport.py` (real HTTP MCP server + real OAuth JWT + real signed proof + real Manager ingress process with a fake executor;
   needs `ZAMERY_MANAGER_AGENTWORKFLOWS`).
+- `tests/test_tool_receipts.py` (authenticated, digest-only, hash-chained server-side receipts for allowlisted read-only tools).
+
+## Server-side tool receipts (evidence for a live read)
+
+`CODING_TOOLS_MCP_RECEIPT_LOG=/abs/owner-only/dir/tool-receipts.jsonl` (optional `CODING_TOOLS_MCP_RECEIPT_TOOLS`, default `read_file,list_dir`)
+makes the provider append one hash-chained, digest-only record per successful OAuth-authenticated call of an allowlisted tool. It never stores content,
+paths or arguments. A receipt is same-host evidence that an authenticated call returned content with a given digest; it cannot say which chat made it.
+The Manager verifies the chain and matches path/content digests (`Runtime/AgentWorkflows/src/delegation-ingress/receipts.ts`).
