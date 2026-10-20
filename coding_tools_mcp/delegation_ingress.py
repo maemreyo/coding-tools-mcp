@@ -32,8 +32,8 @@ DESCRIPTOR_SCHEMA = "zam.delegation.ingress.descriptor.v1"
 CONTRACT_VERSION = "0.1.0"
 # Pins: the bundled catalog is the Foundation artifact. Both the file and the contract digest it declares are checked at load,
 # so a hand-edited schema/description cannot be advertised under the Foundation contract.
-CATALOG_FILE_SHA256 = "d2bfda2c5acf94507538bc9199a1ecdb5504741696412de510a1381d8fb9a57b"
-CATALOG_SCHEMA_DIGEST = "sha256:19c77ef3b387ab9dbde9595b379efe823c194a12c67c39373b4ef31cb9123e1d"
+CATALOG_FILE_SHA256 = "da7e1bd839796ee01a8272925438defcbeea5f33d6ec1f62b30d3e0ec1abe9ec"
+CATALOG_SCHEMA_DIGEST = "sha256:94e9661f5ef7f338221462ce22d5c00ac2f3f5864233b1e98254ef712e813a0e"
 TOOL_NAMES = (
     "work_capabilities", "work_submit", "work_list", "work_inspect", "work_wait",
     "work_message", "work_result", "work_pause", "work_cancel", "work_resume",

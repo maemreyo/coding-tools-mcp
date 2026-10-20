@@ -1,6 +1,6 @@
 {
   "contractVersion": "0.1.0",
-  "schemaDigest": "sha256:19c77ef3b387ab9dbde9595b379efe823c194a12c67c39373b4ef31cb9123e1d",
+  "schemaDigest": "sha256:94e9661f5ef7f338221462ce22d5c00ac2f3f5864233b1e98254ef712e813a0e",
   "tools": [
     {
       "name": "work_capabilities",
@@ -629,6 +629,11 @@
                   "type": "string",
                   "minLength": 1,
                   "maxLength": 16000
+                },
+                "workerId": {
+                  "description": "Optional pre-approved fleet worker binding for this task; never a new grant.",
+                  "type": "string",
+                  "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$"
                 },
                 "dependsOn": {
                   "maxItems": 16,
@@ -3913,6 +3918,11 @@
                     "items": {
                       "type": "object",
                       "properties": {
+                        "id": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 120
+                        },
                         "text": {
                           "type": "string",
                           "minLength": 1,
@@ -3925,6 +3935,14 @@
                             "no",
                             "unchecked"
                           ]
+                        },
+                        "required": {
+                          "type": "boolean"
+                        },
+                        "detail": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 300
                         }
                       },
                       "required": [
@@ -3934,13 +3952,51 @@
                       "additionalProperties": false
                     }
                   },
-                  "note": {
-                    "type": "string",
-                    "minLength": 1,
-                    "maxLength": 300
+                  "requirementAssessment": {
+                    "description": "Requirement assessment is distinct from independent validation.",
+                    "type": "object",
+                    "properties": {
+                      "state": {
+                        "type": "string",
+                        "enum": [
+                          "model-completed",
+                          "partial",
+                          "accepted",
+                          "failed-validation",
+                          "missing-artifact",
+                          "stale"
+                        ]
+                      },
+                      "requiredUnchecked": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 9007199254740991
+                      },
+                      "requiredFailed": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 9007199254740991
+                      },
+                      "optionalUnchecked": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 9007199254740991
+                      },
+                      "completedOutput": {
+                        "type": "boolean"
+                      }
+                    },
+                    "required": [
+                      "state",
+                      "requiredUnchecked",
+                      "requiredFailed",
+                      "optionalUnchecked",
+                      "completedOutput"
+                    ],
+                    "additionalProperties": false
                   },
                   "validation": {
-                    "description": "Optional independent validation; absent is NOT evidence of validation.",
+                    "description": "Independent validation; absent is not evidence of validation.",
                     "type": "object",
                     "properties": {
                       "state": {
@@ -3972,6 +4028,11 @@
                       "state"
                     ],
                     "additionalProperties": false
+                  },
+                  "note": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 300
                   }
                 },
                 "required": [

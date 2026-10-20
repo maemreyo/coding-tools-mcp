@@ -2,9 +2,9 @@
 
 Status: implemented on branch `feat/delegation-v1-mcp-auth-20261020` (from serving source `50e0cf0`). Offline/transport-auth proven; **not** deployed to the
 live connector. Contract: Zamery delegation Foundation v0.1.0, schema digest
-`sha256:19c77ef3b387ab9dbde9595b379efe823c194a12c67c39373b4ef31cb9123e1d`.
-Catalog source: Manager integration amendment `6cd7af52f2f8fb9d2583825e01307b18620499b4`.
-Bundled catalog file SHA-256: `d2bfda2c5acf94507538bc9199a1ecdb5504741696412de510a1381d8fb9a57b`.
+`sha256:94e9661f5ef7f338221462ce22d5c00ac2f3f5864233b1e98254ef712e813a0e`.
+Catalog source: Manager integration branch after composed lane 02/03/06/07/08 merges (`00aa6b9`), final generated contract SHA-256 as below.
+Bundled catalog file SHA-256: `da7e1bd839796ee01a8272925438defcbeea5f33d6ec1f62b30d3e0ec1abe9ec`.
 Offline provider transport suite: 18/18 passing against the Manager's authenticated **real v1 engine**
 and a pinned FakeKit executor, including the revoke/expiry-after-receipt-before-dispatch cases.
 This is **not** a live connector deployment or proof of a real ChatGPT worker.
