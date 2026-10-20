@@ -1,6 +1,6 @@
 {
   "contractVersion": "0.1.0",
-  "schemaDigest": "sha256:8293c3f4ca1d95e0fd9832f994e92f617a62712fcf55866cc7bad6e02f166117",
+  "schemaDigest": "sha256:19c77ef3b387ab9dbde9595b379efe823c194a12c67c39373b4ef31cb9123e1d",
   "tools": [
     {
       "name": "work_capabilities",
@@ -995,6 +995,18 @@
                         ],
                         "additionalProperties": false
                       }
+                    },
+                    "workerName": {
+                      "description": "Display label reported by the owner; NOT a verified execution identity.",
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 80
+                    },
+                    "activityNote": {
+                      "description": "Observed activity summary only; no model reasoning or secret data.",
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 240
                     }
                   },
                   "required": [
@@ -2169,6 +2181,18 @@
                         ],
                         "additionalProperties": false
                       }
+                    },
+                    "workerName": {
+                      "description": "Display label reported by the owner; NOT a verified execution identity.",
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 80
+                    },
+                    "activityNote": {
+                      "description": "Observed activity summary only; no model reasoning or secret data.",
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 240
                     }
                   },
                   "required": [
@@ -3914,6 +3938,40 @@
                     "type": "string",
                     "minLength": 1,
                     "maxLength": 300
+                  },
+                  "validation": {
+                    "description": "Optional independent validation; absent is NOT evidence of validation.",
+                    "type": "object",
+                    "properties": {
+                      "state": {
+                        "type": "string",
+                        "enum": [
+                          "not-run",
+                          "passed",
+                          "failed",
+                          "inconclusive"
+                        ]
+                      },
+                      "checkedAt": {
+                        "type": "string",
+                        "format": "date-time",
+                        "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
+                      },
+                      "evidenceRefs": {
+                        "maxItems": 16,
+                        "type": "array",
+                        "items": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 512,
+                          "description": "Server-resolved reference (project:, resource:, result:, policy:). Never a path or URL."
+                        }
+                      }
+                    },
+                    "required": [
+                      "state"
+                    ],
+                    "additionalProperties": false
                   }
                 },
                 "required": [
@@ -4410,6 +4468,17 @@
                       "pending-safe-boundary",
                       "owner-has-control"
                     ]
+                  },
+                  "ownerSessionRef": {
+                    "description": "Manager-owned owner session reference, not a browser URL.",
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 512
+                  },
+                  "neededAction": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 300
                   }
                 },
                 "required": [
