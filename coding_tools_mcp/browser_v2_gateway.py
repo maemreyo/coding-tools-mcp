@@ -124,6 +124,33 @@ def canonical_scope(raw: Any) -> tuple[dict[str, Any], bytes]:
     return normalized, canonical_json(normalized)
 
 
+def canonical_ref(raw: Any, requested_scope: dict[str, Any]) -> bytes:
+    """Normalize the complete Swift Snapshot ref before forwarding to the CLI.
+
+    The ref is NOT authorization evidence; C4/native must still validate it
+    against the current browser-issued observation immediately before action.
+    """
+    ref = _exact(raw, {"observation_id", "node_handle", "scope",
+                       "generation", "grant_epoch"})
+    embedded_scope, _ = canonical_scope(ref["scope"])
+    if embedded_scope != requested_scope:
+        raise _deny("Browser V2 reference scope mismatch")
+    generation, epoch = ref["generation"], ref["grant_epoch"]
+    if (type(generation) is not int or type(epoch) is not int
+            or not (0 < generation < 2**64) or not (0 < epoch < 2**64)):
+        raise _deny("Invalid Browser V2 reference counters")
+    wire = canonical_json({
+        "observation_id": _uuid(ref["observation_id"]),
+        "node_handle": _uuid(ref["node_handle"]),
+        "scope": embedded_scope,
+        "generation": generation,
+        "grant_epoch": epoch,
+    })
+    if len(wire) > 8192:
+        raise _deny("Browser V2 reference too large")
+    return wire
+
+
 def provisional_access_scope(caller: "BrowserCaller") -> dict[str, Any]:
     """Gateway-owned request placeholder; NEVER an actual tab identity.
 
@@ -417,12 +444,7 @@ class BrowserGateway:
                 "--scope=" + base64.urlsafe_b64encode(scope_bytes).rstrip(b"=").decode("ascii"),
                 "--caller-proof=" + self.caller_proof(caller, scope_bytes, op)]
         if op in {"click", "fill"}:
-            ref = args["ref"]
-            if not isinstance(ref, dict) or ref.get("scope") != scope:
-                raise _deny()
-            ref_bytes = canonical_json(ref)
-            if len(ref_bytes) > 8192:
-                raise _deny()
+            ref_bytes = canonical_ref(args["ref"], scope)
             argv.append("--ref=" + base64.urlsafe_b64encode(ref_bytes).rstrip(b"=").decode("ascii"))
         if op == "fill":
             argv.append("--input-stdin=true")
@@ -465,6 +487,30 @@ class BrowserGateway:
             raise _deny("Zamm CLI status/exit mismatch")
         safe = {k: response[k] for k in ("schema_version", "status",
                                        "reason_code", "request_id") if k in response}
+        # CLI emits only a bounded stage/reason pair; never expose arbitrary
+        # stderr, which could contain page text or sensitive fill data.
+        if response["status"] != "complete":
+            match = re.search(
+                rb"(?m)^browser_v2_s1 stage=(cli_parse|caller_proof|runtime_broker|"
+                rb"live_observation|fill_stdin|transport_request|transport_response) "
+                rb"reason=([a-z0-9_]{1,48})$", result.stderr[-131072:])
+            diagnostic_reasons = {
+                "invalid_verb_or_count", "invalid_flag_syntax", "unknown_or_duplicate_flag",
+                "invalid_scope_token", "invalid_ref_token", "ref_scope_mismatch",
+                "ref_epoch_or_generation", "unexpected_ref", "invalid_stdin_flag",
+                "invalid_managed_backend", "invalid_input", "stale_observation",
+                "unverified_channel", "wrong_scope", "wrong_audience",
+                "invalid_receipt", "invalid_identity", "invalid_operation",
+                "expired", "revoked", "forbidden_origin", "missing_grant",
+                "insufficient_permission", "human_takeover", "policy_denied",
+                "execution_failed", "outcome_unknown", "resource_limit",
+                "unavailable", "invalid_arguments", "unexpected",
+            }
+            if match is not None and match.group(2).decode("ascii") in diagnostic_reasons:
+                safe["diagnostic"] = {
+                    "stage": match.group(1).decode("ascii"),
+                    "reason_code": match.group(2).decode("ascii"),
+                }
         data = response.get("data")
         if data is not None:
             if (not isinstance(data, dict)

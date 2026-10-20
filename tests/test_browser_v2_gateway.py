@@ -25,7 +25,8 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from PIL import Image
 
 from coding_tools_mcp.browser_v2_gateway import (
-    BrowserCaller, BrowserGateway, canonical_json, canonical_scope, verified_png_block,
+    BrowserCaller, BrowserGateway, canonical_json, canonical_scope, canonical_ref,
+    verified_png_block,
 )
 from coding_tools_mcp.errors import ToolFailure
 from coding_tools_mcp.oauth import OAuthConfig, create_access_token, validated_access_token_claims
@@ -46,6 +47,14 @@ def _scope(caller: BrowserCaller) -> dict:
             "document_id": str(uuid.uuid4()).upper(),
             "origin": "https://example.test",
         },
+    }
+
+
+def _ref(scope: dict) -> dict:
+    return {
+        "scope": scope, "observation_id": str(uuid.uuid4()).upper(),
+        "node_handle": str(uuid.uuid4()).upper(),
+        "generation": 1, "grant_epoch": 1,
     }
 
 
@@ -241,7 +250,7 @@ class BrowserGatewayTests(unittest.TestCase):
             ]):
                 arguments = {"operation": op, "scope": self.scope}
                 if op in {"click", "fill"}:
-                    arguments["ref"] = {"scope": self.scope}
+                    arguments["ref"] = _ref(self.scope)
                 if op == "fill":
                     arguments["input"] = "secret typed input"
                 response = self.gateway.dispatch(self.caller, arguments)
@@ -253,6 +262,129 @@ class BrowserGatewayTests(unittest.TestCase):
             self.assertTrue(any(a.startswith("--caller-proof=") for a in argv))
             self.assertFalse(any("secret typed input" in a for a in argv))
             self.assertEqual(kwargs["input"], b"secret typed input" if op == "fill" else b"")
+
+    def test_complete_snapshot_reference_canonicalizes_into_swift_cli_argv(self):
+        original = _ref(self.scope)
+        lowered = json.loads(json.dumps(original))
+        lowered["observation_id"] = original["observation_id"].lower()
+        lowered["node_handle"] = original["node_handle"].lower()
+        lowered["scope"]["target"]["document_id"] = (
+            original["scope"]["target"]["document_id"].lower())
+        snap_scope = json.loads(json.dumps(self.scope))
+        snap_scope["target"]["document_id"] = snap_scope["target"]["document_id"].lower()
+        decoded = json.loads(canonical_ref(lowered, canonical_scope(snap_scope)[0]))
+        self.assertEqual(decoded, original)
+        captured = []
+        def fake_run(argv, **kwargs):
+            captured.append((argv, kwargs))
+            return subprocess.CompletedProcess(argv, 0, json.dumps({
+                "schema_version": "zam.browser.v2", "request_id": str(uuid.uuid4()),
+                "status": "complete", "reason_code": "ok",
+                "data": {"operation": "click"},
+            }).encode(), b"")
+        with patch("coding_tools_mcp.browser_v2_gateway.subprocess.run", side_effect=fake_run):
+            result = self.gateway.dispatch(self.caller, {
+                "operation": "click", "scope": snap_scope, "ref": lowered,
+            })
+        self.assertEqual(result["status"], "complete")
+        argv, _ = captured[0]
+        encoded = next(arg.split("=", 1)[1] for arg in argv if arg.startswith("--ref="))
+        self.assertEqual(json.loads(base64.urlsafe_b64decode(encoded + "=" * (-len(encoded) % 4))),
+                         original)
+
+    def test_malformed_forged_and_cross_scope_refs_rejected_before_cli(self):
+        with patch("coding_tools_mcp.browser_v2_gateway.subprocess.run") as no_run:
+            bad = _ref(self.scope)
+            bad["unexpected"] = "forbidden"
+            invalid = [bad]
+            for field, value in (("generation", 0), ("generation", 1.0),
+                                 ("grant_epoch", True), ("node_handle", "garbled")):
+                entry = _ref(self.scope)
+                entry[field] = value
+                invalid.append(entry)
+            other = json.loads(json.dumps(_ref(self.scope)))
+            other["scope"]["target"]["document_id"] = str(uuid.uuid4()).upper()
+            invalid.append(other)
+            for ref in invalid:
+                with self.subTest(ref=sorted(ref)), self.assertRaises(ToolFailure):
+                    self.gateway.dispatch(self.caller, {
+                        "operation": "click", "scope": self.scope, "ref": ref,
+                    })
+            no_run.assert_not_called()
+
+    def test_cli_diagnostic_is_bounded_and_all_other_stderr_is_discarded(self):
+        response = {"schema_version": "zam.browser.v2",
+                    "request_id": str(uuid.uuid4()), "status": "invalid",
+                    "reason_code": "invalid_arguments"}
+        stderr = (b"PRIVATE_FILL_MUST_NOT_APPEAR\n"
+                  b"browser_v2_s1 stage=runtime_broker reason=stale_observation\n"
+                  b"browser_v2_s1 stage=invalid_other reason=some_secret\n")
+        with patch("coding_tools_mcp.browser_v2_gateway.subprocess.run",
+                   return_value=subprocess.CompletedProcess([], 6,
+                       json.dumps(response).encode(), stderr)):
+            result = self.gateway.dispatch(self.caller, {
+                "operation": "click", "scope": self.scope, "ref": _ref(self.scope),
+            })
+        self.assertEqual(result["diagnostic"], {
+            "stage": "runtime_broker", "reason_code": "stale_observation"})
+        self.assertNotIn("PRIVATE_FILL", json.dumps(result))
+
+    @unittest.skipUnless(os.environ.get("BROWSER_V2_S1_SWIFT_PROBE"),
+                         "Set BROWSER_V2_S1_SWIFT_PROBE to the compiled Manager acceptance runner")
+    def test_real_swift_snapshot_encoder_to_gateway_cli_click_fill(self):
+        """Actual Gateway dispatch subprocess to the compiled Swift CLI parser.
+
+        This test does NOT exercise the real DOM or forge a browser grant.
+        The compiled Swift fixture only parses and acknowledges syntax.
+        """
+        executable = Path(os.environ["BROWSER_V2_S1_SWIFT_PROBE"]).resolve()
+        self.assertTrue(executable.is_file())
+        snapshot = subprocess.run([str(executable), "--s1-snapshot"],
+                                  capture_output=True, check=True, timeout=20)
+        body = json.loads(snapshot.stdout)
+        self.assertEqual(body["data"]["operation"], "snapshot")
+        scope = body["data"]["scope"]
+        observation = body["data"]["observation"]
+        self.assertEqual(observation["scope"], scope)
+        self.assertGreater(len(observation["refs"]), 0)
+        ref = observation["refs"][0]
+        self.assertEqual(ref["scope"], scope)
+        caller = BrowserCaller(scope["session_id"],
+                               scope["audience"]["consumer_instance_id"])
+        wrapper = self.directory / "manager-wire-probe"
+        wrapper.write_text("#!/bin/sh\nexec '" + str(executable).replace("'", "'\\''") +
+                           "' \"$@\"\n")
+        wrapper.chmod(0o700)
+        gateway = BrowserGateway(self.gateway.gateway_id,
+                                 self.directory / "secret", wrapper,
+                                 hashlib.sha256(wrapper.read_bytes()).hexdigest())
+        for operation in ("click", "fill"):
+            args = {"operation": operation, "scope": scope, "ref": ref}
+            if operation == "fill":
+                args["input"] = "fixture unicode: ắ\u26a1"
+            with self.subTest(operation=operation):
+                result = gateway.dispatch(caller, args)
+                self.assertEqual((result["status"], result["cli_exit_code"]),
+                                 ("complete", 0))
+                self.assertNotIn("fixture unicode", json.dumps(result))
+
+        forged = dict(ref, observation_id=str(uuid.uuid4()).upper())
+        # Without C4/native authority the CLI *parser* must accept structurally
+        # valid refs; the real bridge must check observation membership.
+        self.assertEqual(gateway.dispatch(caller, {
+            "operation": "click", "scope": scope, "ref": forged,
+        })["status"], "complete")
+        malformed = dict(ref, node_handle="not-a-uuid")
+        with self.assertRaises(ToolFailure):
+            gateway.dispatch(caller, {
+                "operation": "click", "scope": scope, "ref": malformed,
+            })
+        other = json.loads(json.dumps(ref))
+        other["scope"]["target"]["document_id"] = str(uuid.uuid4()).upper()
+        with self.assertRaises(ToolFailure):
+            gateway.dispatch(caller, {
+                "operation": "click", "scope": scope, "ref": other,
+            })
 
     def test_reject_tampered_cli_and_extra_response_fields(self):
         self.cli.write_text("#!/bin/sh\nexit 1\n")
