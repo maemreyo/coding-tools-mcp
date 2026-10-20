@@ -9,13 +9,10 @@ Offline provider transport suite: 18/18 passing against the Manager's authentica
 and a pinned FakeKit executor, including the revoke/expiry-after-receipt-before-dispatch cases.
 This is **not** a live connector deployment or proof of a real ChatGPT worker.
 
-Staged wheel for this exact amended catalog (not installed):
-`dist/delegation-v1-contract-19c77ef3/coding_tools_mcp-0.5.2+zamery.browser2.oauth2.delegation1.c19c77e-py3-none-any.whl`,
-SHA-256 `1b8e2463d25b4684713665e24120b7a70775d8d3b63282deb4c418ba2e8df584`.
-The wheel was installed into an isolated throwaway venv and its `load_catalog()` returned all ten tools with the pinned digest.
-The previous `delegation1` wheel has a different catalog and is superseded for staging only. No live provider, tunnel or connector was modified.
-
-**Integration branch is moving:** this wheel pins the `6cd7af5`-era catalog. After it was tested, the Manager coordinator merged lane 06 (`7287996`) and began merging lane 03; the coordinator's working tree had unresolved conflict stages in contract files and `contracts:check` failed. Therefore this wheel is **not installable as a matching candidate for the moving integration checkout**. First finalize the combined contract, regenerate and check it, then pin and stage a new wheel/version; do not merely edit the declared digest.
+The old c19c77e wheel belongs to a superseded contract. See
+[the completion candidate and rebuild/rollout runbook](delegation-completion-provider-20261020.md)
+for the versioned c94e9661 candidate. The final artifact manifest, not an earlier
+wheel report, identifies the matching Manager and provider source.
 
 ## What this provider does and does not do
 

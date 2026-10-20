@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.5.2+zamery.browser2.oauth2.delegation2.c94e9661 - 2026-10-20
+
+- Stage the generated delegation 0.1.0 catalog with schema digest 94e9661f.
+- Bound owner transport waits by a total deadline, including slow replies.
+- Preserve the serving oauth2 release; this candidate requires separate rollout.
+
 ## 0.5.0 - 2026-09-14
 
 The v0.5.0 reliability work. Migration notes:

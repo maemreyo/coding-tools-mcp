@@ -208,7 +208,7 @@ wheels = [
 
 [[package]]
 name = "coding-tools-mcp"
-version = "0.5.2+zamery.browser2.oauth1"
+version = "0.5.2+zamery.browser2.oauth2.delegation2.c94e9661"
 source = { editable = "." }
 dependencies = [
     { name = "pyjwt" },

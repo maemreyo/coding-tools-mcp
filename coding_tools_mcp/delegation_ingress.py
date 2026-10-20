@@ -41,6 +41,7 @@ TOOL_NAMES = (
 IDEMPOTENT_RETRY_TOOLS = frozenset(("work_submit", "work_message", "work_pause", "work_cancel", "work_resume"))
 MAX_RESPONSE_BYTES = 4_194_304
 MAX_ARGUMENT_BYTES = 1_000_000
+MAX_WAIT_MS = 25_000
 
 
 @dataclass(frozen=True)
@@ -138,6 +139,7 @@ class DelegationGateway:
             raise _Unavailable("setup", "The Zamery Manager is not running or delegation is not enabled for it.") from exc
 
     def _exchange(self, data: dict[str, Any], frame: dict[str, Any], timeout: float) -> dict[str, Any]:
+        deadline = time.monotonic() + timeout
         line = (json.dumps(frame, separators=(",", ":")) + "\n").encode("utf-8")
         s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         s.settimeout(3.0)
@@ -147,10 +149,14 @@ class DelegationGateway:
             s.close()
             raise _Unavailable("setup", "The Zamery Manager ingress is not reachable (not running or restarting).") from exc
         try:
-            s.settimeout(timeout)
+            s.settimeout(max(0.001, deadline - time.monotonic()))
             s.sendall(line)
             buf = b""
             while b"\n" not in buf:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise socket.timeout("delegation response deadline")
+                s.settimeout(remaining)
                 chunk = s.recv(65536)
                 if not chunk:
                     raise _Unavailable("lost", "The Manager closed the connection before replying.")
@@ -184,7 +190,9 @@ class DelegationGateway:
         argument_bytes = _canonical_arguments(arguments)
         if len(argument_bytes) > MAX_ARGUMENT_BYTES:
             raise JsonRpcError(-32602, "arguments exceed the delegation bound", {"reason": "invalid_arguments"})
-        wait_ms = arguments.get("waitMs") if tool == "work_wait" and isinstance(arguments.get("waitMs"), int) else 0
+        wait_ms = arguments.get("waitMs", 0) if tool == "work_wait" else 0
+        if type(wait_ms) is not int or not 0 <= wait_ms <= MAX_WAIT_MS:
+            raise JsonRpcError(-32602, "waitMs must be an integer from 0 to 25000", {"reason": "invalid_arguments"})
         timeout = 20.0 + wait_ms / 1000.0
         retry_hint = tool in IDEMPOTENT_RETRY_TOOLS or tool in ("work_list", "work_inspect", "work_wait", "work_result", "work_capabilities")
         try:
