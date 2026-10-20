@@ -11,6 +11,7 @@ import http.client
 import json
 import os
 import stat
+import subprocess
 import tempfile
 import threading
 import unittest
@@ -18,6 +19,7 @@ import uuid
 from pathlib import Path
 from unittest.mock import patch
 
+import jwt
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from PIL import Image
@@ -99,6 +101,75 @@ class BrowserGatewayTests(unittest.TestCase):
         self.assertIsNone(validated_access_token_claims("untrusted", self.cfg, self.issuer))
         with self.assertRaises(ToolFailure):
             BrowserCaller.from_oauth_claims({"client_id": "spoofed"}, self.issuer)
+
+    def test_legacy_verified_access_token_binds_a_stable_session(self):
+        # Exact pre-JTI access token format. Only the HTTP JWT validator may
+        # supply the token and claims to BrowserCaller.
+        old_token = jwt.encode({
+            "iss": self.issuer, "aud": self.issuer,
+            "sub": "registered-test-client", "client_id": "registered-test-client",
+            "iat": 1000, "exp": 4102444800, "scope": "mcp",
+        }, self.cfg.token_secret, algorithm="HS256")
+        claims = validated_access_token_claims(old_token, self.cfg, self.issuer)
+        self.assertIsNotNone(claims)
+        first = BrowserCaller.from_oauth_claims(
+            claims, self.issuer, verified_token=old_token
+        )
+        second = BrowserCaller.from_oauth_claims(
+            claims, self.issuer, verified_token=old_token
+        )
+        self.assertEqual(first, second)
+        self.assertNotEqual(first.session_id, self.caller.session_id)
+        self.assertEqual(first.consumer_instance_id, self.caller.consumer_instance_id)
+        with self.assertRaises(ToolFailure):
+            BrowserCaller.from_oauth_claims(claims, self.issuer)
+        with self.assertRaises(ToolFailure):
+            BrowserCaller.from_oauth_claims(claims, self.issuer, verified_token="")
+        self.assertIsNone(validated_access_token_claims(
+            old_token + "tampered", self.cfg, self.issuer
+        ))
+
+    def test_empty_scope_bootstraps_only_access_request_from_verified_caller(self):
+        pending = {
+            "schema_version": "zam.browser.v2",
+            "request_id": str(uuid.uuid4()).upper(),
+            "status": "pending", "reason_code": "waiting_for_owner",
+        }
+        response = subprocess.CompletedProcess([], 3, json.dumps(pending).encode(), b"")
+        with patch("coding_tools_mcp.browser_v2_gateway.subprocess.run",
+                   return_value=response) as cli:
+            result = self.gateway.dispatch(self.caller, {
+                "operation": "request_access", "scope": {},
+            })
+        self.assertEqual(result["status"], "pending")
+        self.assertEqual(result["reason_code"], "waiting_for_owner")
+        argv = cli.call_args.args[0]
+        self.assertEqual(argv[1:4], ["browser", "v2", "request-access"])
+        encoded = next(arg.split("=", 1)[1] for arg in argv if arg.startswith("--scope="))
+        raw = base64.urlsafe_b64decode(encoded + "=" * (-len(encoded) % 4))
+        scope, _ = canonical_scope(json.loads(raw))
+        self.assertEqual(scope["session_id"], self.caller.session_id)
+        self.assertEqual(scope["audience"]["consumer_instance_id"],
+                         self.caller.consumer_instance_id)
+        self.assertEqual(scope["target"]["backend"], "chrome_companion")
+        self.assertEqual(scope["target"]["origin"], "https://example.invalid")
+        with patch("coding_tools_mcp.browser_v2_gateway.subprocess.run") as no_run:
+            for op in ("status", "snapshot", "screenshot", "release"):
+                with self.subTest(operation=op), self.assertRaises(ToolFailure):
+                    self.gateway.dispatch(self.caller, {"operation": op, "scope": {}})
+            with self.assertRaises(ToolFailure):
+                self.gateway.dispatch(None, {"operation": "request_access", "scope": {}})
+            no_run.assert_not_called()
+        listed = dict(pending, status="complete", reason_code="ok",
+                      data={"operation": "list_shared", "scopes": []})
+        with patch("coding_tools_mcp.browser_v2_gateway.subprocess.run",
+                   return_value=subprocess.CompletedProcess(
+                       [], 0, json.dumps(listed).encode(), b""
+                   )):
+            result = self.gateway.dispatch(self.caller, {
+                "operation": "list_shared", "scope": {},
+            })
+        self.assertEqual(result["data"]["scopes"], [])
 
     def test_real_ed25519_proof_claims(self):
         signed, envelope = self._proof()
@@ -296,6 +367,22 @@ class BrowserGatewayTests(unittest.TestCase):
             self.assertEqual(status, 200)
             self.assertFalse(result["result"]["isError"])
             self.assertEqual(result["result"]["structuredContent"]["status"], "complete")
+            old_token = jwt.encode({
+                "iss": self.issuer, "aud": self.issuer,
+                "sub": "registered-test-client", "client_id": "registered-test-client",
+                "iat": 1000, "exp": 4102444800, "scope": "mcp",
+            }, self.cfg.token_secret, algorithm="HS256")
+            old_caller = BrowserCaller.from_oauth_claims(
+                validated_access_token_claims(old_token, self.cfg, self.issuer),
+                self.issuer, verified_token=old_token,
+            )
+            status, result = call(old_token, _scope(old_caller))
+            self.assertEqual(status, 200)
+            self.assertFalse(result["result"]["isError"])
+            self.assertEqual(result["result"]["structuredContent"]["status"], "complete")
+            status, result = call(old_token, allowed_scope)
+            self.assertEqual(status, 200)
+            self.assertTrue(result["result"]["isError"])
             status, result = call(None, allowed_scope)
             self.assertEqual(status, 401)
             status, result = call(verified_token, self.scope)

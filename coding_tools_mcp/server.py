@@ -6716,7 +6716,8 @@ class MCPHandler(http.server.BaseHTTPRequestHandler):
                 if claims is not None:
                     try:
                         principal = BrowserCaller.from_oauth_claims(
-                            claims, self.oauth_base_url()
+                            claims, self.oauth_base_url(),
+                            verified_token=auth[len("Bearer "):]
                         )
                     except ToolFailure:
                         pass  # Older valid OAuth tokens still work for all existing tools.

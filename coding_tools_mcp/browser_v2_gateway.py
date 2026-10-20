@@ -124,6 +124,29 @@ def canonical_scope(raw: Any) -> tuple[dict[str, Any], bytes]:
     return normalized, canonical_json(normalized)
 
 
+def provisional_access_scope(caller: "BrowserCaller") -> dict[str, Any]:
+    """Gateway-owned request placeholder; NEVER an actual tab identity.
+
+    The native owner consent flow chooses and attests the real tab scope.
+    The provisional target is used only for request_access/list_shared;
+    no snapshot, interaction or screenshot may use it. Session/audience
+    come exclusively from the gateway's verified OAuth caller.
+    """
+    return {
+        "session_id": caller.session_id,
+        "audience": {"kind": "chatgpt_zamm",
+                     "consumer_instance_id": caller.consumer_instance_id},
+        "target": {
+            "backend": "chrome_companion",
+            "installation_id": str(uuid.uuid4()).upper(),
+            "browser_instance_id": str(uuid.uuid4()).upper(),
+            "tab_handle": str(uuid.uuid4()).upper(),
+            "document_id": str(uuid.uuid4()).upper(),
+            "origin": "https://example.invalid",
+        },
+    }
+
+
 @dataclass(frozen=True)
 class BrowserCaller:
     """Derived ONLY from independently verified gateway OAuth JWT claims."""
@@ -132,15 +155,27 @@ class BrowserCaller:
     consumer_instance_id: str
 
     @classmethod
-    def from_oauth_claims(cls, claims: dict[str, Any], issuer: str) -> "BrowserCaller":
+    def from_oauth_claims(cls, claims: dict[str, Any], issuer: str,
+                          verified_token: str | None = None) -> "BrowserCaller":
         client = claims.get("client_id")
         token_id = claims.get("jti")
         if (not isinstance(client, str) or not client
                 or claims.get("sub") != client
-                or not isinstance(token_id, str)
                 or claims.get("iss") != issuer):
             raise _deny()
-        session_id = _uuid(token_id)
+        if isinstance(token_id, str):
+            session_id = _uuid(token_id)
+        elif token_id is None and isinstance(verified_token, str) and verified_token:
+            # Historical OAuth tokens were issued without JTI. This fallback
+            # is ONLY called after independent JWT signature, issuer, audience,
+            # expiry, and client-registry validation. Hash the *verified token*
+            # itself to keep sessions opaque, stable, and distinct per token.
+            session_id = str(uuid.uuid5(
+                CONSUMER_NAMESPACE, "legacy-token|" +
+                hashlib.sha256(verified_token.encode("utf-8")).hexdigest()
+            )).upper()
+        else:
+            raise _deny()
         # OAuth in this upstream identifies a registered CLIENT, not an OS
         # installation. Session UUID is token-unique; audience UUID represents
         # the registered client. See the acceptance report for this boundary.
@@ -357,7 +392,14 @@ class BrowserGateway:
             allowed.add("input")
         if set(args) != allowed:
             raise _deny("Unrecognized or incomplete Browser V2 arguments")
-        scope, scope_bytes = canonical_scope(args.get("scope"))
+        requested_scope = args.get("scope")
+        if op in {"request_access", "list_shared"} and requested_scope == {}:
+            # An authenticated ChatGPT caller does not know its OAuth session
+            # ID until the trusted gateway binds it. Do not ask agents to
+            # fabricate browser identity or pass caller-supplied UUIDs.
+            # list_shared can then return owner-attested *real* tab scopes.
+            requested_scope = provisional_access_scope(caller)
+        scope, scope_bytes = canonical_scope(requested_scope)
         if (scope["session_id"] != caller.session_id
                 or scope["audience"]["consumer_instance_id"] != caller.consumer_instance_id):
             raise _deny()
