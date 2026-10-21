@@ -136,6 +136,24 @@ CODING_TOOLS_MCP_OAUTH_CLIENT_SECRET=<optional-confidential-secret>
 If a client ID is configured, its redirect URI list is required operational
 configuration; do not rely on the loopback fallback for a production client.
 
+### Persisting dynamically registered clients
+
+By default dynamically registered clients exist only in server memory, so a
+restart makes an already connected client fail at `/oauth/authorize` with
+`Unknown client_id` until it registers again. Set a store file to keep them:
+
+```bash
+CODING_TOOLS_MCP_OAUTH_CLIENT_STORE=/path/to/private/oauth-clients.json
+```
+
+The file is created `0600` (parent directory `0700`) and replaced atomically. It
+holds client IDs, redirect URIs and the SHA-256 digest of any client secret,
+never the secret itself. Pre-registered clients are not written to it. An
+unreadable file is renamed to `*.corrupt-<timestamp>` and the registry starts
+empty. If the file cannot be written, the registration request fails instead of
+issuing a client that would be lost on restart. Keep `OAUTH_TOKEN_SECRET` set,
+otherwise issued access tokens still stop working on restart.
+
 ## HTTP session behavior
 
 There are none. Since 0.3.0 this endpoint is stateless: no response carries an

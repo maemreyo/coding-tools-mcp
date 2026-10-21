@@ -46,6 +46,7 @@ from .oauth import (
     OAUTH_RESPONSE_TYPES_SUPPORTED,
     MAX_PENDING_CODES,
     OAUTH_TOKEN_TTL_SECONDS,
+    OAuthClientRegistry,
     OAuthConfig,
     create_access_token,
     valid_pkce_challenge,
@@ -7553,11 +7554,13 @@ def run_http(args: argparse.Namespace) -> int:
         if not 60 <= token_ttl <= 604_800:
             print(f"ERROR: {ENV_PREFIX}_OAUTH_TOKEN_TTL must be between 60 and 604800 seconds.", file=sys.stderr)
             return 2
+        client_store = os.environ.get(f"{ENV_PREFIX}_OAUTH_CLIENT_STORE") or None
         oauth_config = OAuthConfig(
             password=password,
             server_url=server_url,
             token_secret=token_secret,
             token_ttl=token_ttl,
+            registry=OAuthClientRegistry(client_store),
         )
         if client_id:
             raw_redirects = os.environ.get(f"{ENV_PREFIX}_OAUTH_REDIRECT_URIS") or "http://127.0.0.1/callback"
