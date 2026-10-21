@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import json
+import os
 import re
 import secrets
 import threading
@@ -9,6 +11,7 @@ import time
 import urllib.parse
 import uuid
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
 import jwt
@@ -26,6 +29,7 @@ OAUTH_RESPONSE_TYPES_SUPPORTED = ("code",)
 MAX_REDIRECT_URIS = 10
 MAX_REGISTERED_CLIENTS = 1_024
 MAX_PENDING_CODES = 256
+CLIENT_STORE_VERSION = 1
 
 
 @dataclass(frozen=True)
@@ -49,11 +53,92 @@ class OAuthClient:
 
 
 class OAuthClientRegistry:
-    """Thread-safe RFC 7591 client registry for one server process."""
+    """Thread-safe RFC 7591 client registry.
 
-    def __init__(self) -> None:
+    Dynamically registered clients live in memory and, when ``store_path`` is
+    given, survive restarts through an atomically replaced 0600 JSON file that
+    holds only the SHA-256 secret digest, never the client secret. Clients added
+    with ``add_preregistered`` come from configuration and are not persisted.
+    """
+
+    def __init__(self, store_path: str | Path | None = None) -> None:
         self._clients: dict[str, OAuthClient] = {}
+        self._dynamic_ids: set[str] = set()
         self._lock = threading.Lock()
+        self._store_path = Path(store_path) if store_path else None
+        if self._store_path is not None:
+            self._load()
+
+    def _load(self) -> None:
+        assert self._store_path is not None
+        try:
+            raw = self._store_path.read_text(encoding="utf-8")
+        except FileNotFoundError:
+            return
+        try:
+            document = json.loads(raw)
+            entries = document["clients"] if document.get("version") == CLIENT_STORE_VERSION else None
+            if not isinstance(entries, list):
+                raise ValueError("unsupported client store")
+        except (ValueError, KeyError, AttributeError):
+            # Keep the unreadable file for inspection instead of overwriting it.
+            try:
+                os.replace(self._store_path, self._store_path.with_name(self._store_path.name + f".corrupt-{int(time.time())}"))
+            except OSError:
+                pass
+            return
+        for entry in entries[:MAX_REGISTERED_CLIENTS]:
+            try:
+                client = OAuthClient(
+                    client_id=str(entry["client_id"]),
+                    redirect_uris=validate_redirect_uris(entry["redirect_uris"]),
+                    token_endpoint_auth_method=str(entry["token_endpoint_auth_method"]),
+                    client_name=_optional_text(entry.get("client_name"), 200),
+                    secret_digest=entry.get("secret_digest"),
+                    issued_at=int(entry["issued_at"]),
+                )
+            except (KeyError, TypeError, ValueError):
+                continue
+            if client.token_endpoint_auth_method not in {"none", "client_secret_post", "client_secret_basic"}:
+                continue
+            if client.token_endpoint_auth_method != "none" and not isinstance(client.secret_digest, str):
+                continue
+            self._clients[client.client_id] = client
+            self._dynamic_ids.add(client.client_id)
+
+    def _save_locked(self) -> None:
+        if self._store_path is None:
+            return
+        document = {
+            "version": CLIENT_STORE_VERSION,
+            "clients": [
+                {
+                    "client_id": c.client_id,
+                    "redirect_uris": list(c.redirect_uris),
+                    "token_endpoint_auth_method": c.token_endpoint_auth_method,
+                    "client_name": c.client_name,
+                    "secret_digest": c.secret_digest,
+                    "issued_at": c.issued_at,
+                }
+                for c in (self._clients[i] for i in sorted(self._dynamic_ids))
+            ],
+        }
+        directory = self._store_path.parent
+        directory.mkdir(parents=True, exist_ok=True, mode=0o700)
+        temporary = self._store_path.with_name(f".{self._store_path.name}.{os.getpid()}.tmp")
+        descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        try:
+            with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+                json.dump(document, handle)
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(temporary, self._store_path)
+        except BaseException:
+            try:
+                os.unlink(temporary)
+            except OSError:
+                pass
+            raise
 
     def add_preregistered(
         self,
@@ -109,6 +194,13 @@ class OAuthClientRegistry:
                 secret_digest=_secret_digest(client_secret) if client_secret is not None else None,
             )
             self._clients[client_id] = client
+            self._dynamic_ids.add(client_id)
+            try:
+                self._save_locked()
+            except OSError:
+                del self._clients[client_id]
+                self._dynamic_ids.discard(client_id)
+                raise ValueError("client registration could not be persisted") from None
         response: dict[str, Any] = {
             "client_id": client.client_id,
             "client_id_issued_at": client.issued_at,
